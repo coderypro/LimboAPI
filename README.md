@@ -92,3 +92,306 @@ Your donations are really appreciated. Donations wallets/links/cards:
 - Qiwi Wallet: ``PFORG`` or [this link](https://my.qiwi.com/form/Petr-YSpyiLt9c6)
 - YooMoney Wallet: ``4100 1721 8467 044`` or [this link](https://yoomoney.ru/quickpay/shop-widget?writer=seller&targets=Donation&targets-hint=&default-sum=&button-text=11&payment-type-choice=on&mobile-payment-type-choice=on&hint=&successURL=&quickpay=shop&account=410017218467044)
 - Monero (XMR): 86VQyCz68ApebfFgrzRFAuYLdvd3qG8iT9RHcru9moQkJR9W2Q89Gt3ecFQcFu6wncGwGJsMS9E8Bfr9brztBNbX7Q2rfYS
+
+
+
+Update 1.1.28
+
+
+LimboAPI local build update - detailed notes
+
+1. plugin/build.gradle
+
+What changed:
+- Normal resource processing no longer depends on the heavy generateMappings task.
+- Mapping regeneration now only runs when the Gradle property regenerateMappings is provided.
+
+Why:
+- The original build tried to generate Minecraft mappings during normal builds.
+- That made the build look stuck around 66% and also caused cleanup errors on Windows.
+- The project already needs checked-in/runtime resources for normal jar builds.
+
+Result:
+- Normal shadowJar builds are much faster.
+- The plugin jar can be built without regenerating all Minecraft version data.
+
+Relevant behavior:
+- Normal build:
+  .\gradlew.bat :plugin:shadowJar --no-daemon
+
+- Full mapping regeneration, only if needed:
+  .\gradlew.bat :plugin:shadowJar --no-daemon -PregenerateMappings
+
+
+2. generate-runtime-mappings.ps1
+
+What changed:
+- Added a local PowerShell generator script.
+- It generates runtime mapping JSON files from cached Minecraft 1.21 reports and existing legacy mapping files.
+
+Generated files include:
+- plugin/src/main/resources/mapping/blocks.json
+- plugin/src/main/resources/mapping/blocks_mapping.json
+- plugin/src/main/resources/mapping/blockstates.json
+- plugin/src/main/resources/mapping/blockstates_mapping.json
+- plugin/src/main/resources/mapping/defaultblockproperties.json
+- plugin/src/main/resources/mapping/legacyblocks.json
+- plugin/src/main/resources/mapping/items.json
+- plugin/src/main/resources/mapping/items_mapping.json
+- plugin/src/main/resources/mapping/blockentities_mapping.json
+- plugin/src/main/resources/mapping/tags.json
+
+Why:
+- After skipping heavy generateMappings in Gradle, several runtime mapping files were missing from the jar.
+- LimboAPI loads these files during startup.
+- Missing files caused NullPointerException crashes in:
+  SimpleItemComponentManager
+  SimpleBlock
+  SimpleTagManager
+
+Result:
+- Runtime mapping files are now generated and packaged into the plugin jar.
+- Startup can pass the virtual world initialization stage.
+
+
+3. plugin/src/main/resources/mapping/data_component_types.json
+
+What changed:
+- Added item component type id definitions.
+
+Why:
+- SimpleItemComponentManager requires this file during startup.
+- Without it, LimboAPI crashed at:
+  SimpleItemComponentManager.<clinit>
+
+Result:
+- Item component manager can load component IDs.
+
+
+4. plugin/src/main/resources/mapping/data_component_types_mapping.json
+
+What changed:
+- Added item component type mappings for 1.21 and 26.1 fallback.
+
+Why:
+- Modern Minecraft item packets use data components.
+- LimboAPI needs component IDs for SetSlotPacket and item component writing.
+
+Result:
+- 26.1/latest protocol can fall back to available component mappings instead of crashing.
+
+
+5. plugin/src/main/java/net/elytrium/limboapi/server/item/SimpleItemComponentManager.java
+
+What changed:
+- Added fallback lookup for item component ID maps.
+- If an exact ProtocolVersion is not found, it uses the nearest lower available mapping.
+- If no lower mapping exists, it uses the earliest available mapping.
+
+Why:
+- Velocity protocol 26.1/latest may not have an exact generated mapping entry.
+- Previously this caused unsupported-version or missing-id crashes.
+
+Result:
+- Item component IDs are more tolerant across nearby/new protocol versions.
+
+
+6. plugin/src/main/resources/mapping/blocks.json
+
+What changed:
+- Added/generated modern block registry IDs.
+
+Why:
+- SimpleBlock needs local block IDs for modern block names.
+- Missing this file caused startup NPE at:
+  SimpleBlock.init
+
+Result:
+- Modern block names can resolve to local IDs.
+
+
+7. plugin/src/main/resources/mapping/blocks_mapping.json
+
+What changed:
+- Added/generated block ID mappings for legacy/current versions.
+
+Why:
+- SimpleBlock uses this file to resolve block IDs across WorldVersion values.
+
+Result:
+- Blocks can resolve across supported Minecraft versions.
+
+
+8. plugin/src/main/resources/mapping/blockstates.json
+
+What changed:
+- Added/generated modern blockstate IDs.
+
+Why:
+- SimpleBlock needs blockstate string -> protocol id mapping.
+
+Result:
+- Modern blockstates like minecraft:stone or minecraft:chain[axis=y,waterlogged=false] can resolve.
+
+
+9. plugin/src/main/resources/mapping/blockstates_mapping.json
+
+What changed:
+- Added/generated blockstate mappings.
+- Included a legacy baseline entry plus 1.21 and 26.1 entries.
+
+Why:
+- SimpleBlock loops across ProtocolVersion.SUPPORTED_VERSIONS and expects IDs to be parseable.
+- Missing early entries could lead to null/string parse issues.
+
+Result:
+- Blockstate lookup is stable during startup.
+
+
+10. plugin/src/main/resources/mapping/defaultblockproperties.json
+
+What changed:
+- Added/generated default block properties.
+
+Why:
+- SimpleBlock uses default properties when converting a plain block id into a specific blockstate.
+
+Result:
+- Blocks with properties can resolve their default state.
+
+
+11. plugin/src/main/resources/mapping/legacyblocks.json
+
+What changed:
+- Fixed/generated correct format.
+- Values are now numeric modern blockstate IDs, not names.
+
+Before problem:
+  "0": "minecraft:air"
+
+Correct format:
+  "0": "0"
+  "1": "1"
+
+Why:
+- SimpleBlock expects legacy block id -> numeric modern blockstate id.
+- Wrong string values caused:
+  NumberFormatException: For input string: "minecraft:air"
+
+Result:
+- Legacy block IDs load correctly.
+
+
+12. plugin/src/main/resources/mapping/items.json
+
+What changed:
+- Added/generated modern item registry IDs.
+
+Why:
+- SimpleItem needs this file during startup.
+
+Result:
+- Modern item IDs can resolve.
+
+
+13. plugin/src/main/resources/mapping/items_mapping.json
+
+What changed:
+- Added/generated item version mappings.
+
+Why:
+- SimpleItem needs item IDs per WorldVersion.
+
+Result:
+- Items can resolve across supported versions.
+
+
+14. plugin/src/main/resources/mapping/blockentities_mapping.json
+
+What changed:
+- Added/generated block entity mappings.
+
+Why:
+- SimpleBlockEntity requires this file during init.
+
+Result:
+- Block entity type IDs can resolve.
+
+
+15. plugin/src/main/resources/mapping/tags.json
+
+What changed:
+- Added/generated flattened tags for:
+  minecraft:block
+  minecraft:item
+  minecraft:fluid
+- Added empty safe sections for:
+  minecraft:entity_type
+  minecraft:damage_type
+  minecraft:banner_pattern
+
+Why:
+- SimpleTagManager requires /mapping/tags.json during startup.
+- Missing file caused:
+  SimpleTagManager.init NullPointerException
+
+Result:
+- Tags can be loaded and converted into UpdateTagsPacket.
+
+
+16. plugin/src/main/java/net/elytrium/limboapi/server/world/SimpleBlock.java
+
+What changed:
+- fromModernID now safely returns AIR when a remapped/unknown block is not present in local block mappings.
+- remapModernID now applies a remap only when the remap target exists in MODERN_BLOCK_STRING_MAP.
+
+Why:
+- modern_block_id_remap.json remaps:
+  minecraft:chain -> minecraft:iron_chain
+- The bundled registry has minecraft:chain, but not minecraft:iron_chain.
+- This caused:
+  IllegalStateException: failed to find local id for specific block: minecraft:iron_chain
+
+Result:
+- Unsupported/remapped block IDs no longer crash startup.
+- minecraft:chain no longer becomes minecraft:iron_chain unless iron_chain exists in mappings.
+
+
+17. plugin/src/main/java/net/elytrium/limboapi/server/LimboImpl.java
+
+What changed:
+- Fixed minecraft:zombie_nautilus_variant registry for Minecraft 1.21.11+.
+- Added temperate and warm zombie nautilus variants with proper data shape.
+
+Why:
+- Issue #226 reported clients rejecting an invalid/empty zombie nautilus registry.
+
+Result:
+- 1.21.11+ registry sync includes valid zombie nautilus variant entries.
+
+
+18. Runtime errors fixed from provided logs
+
+Fixed:
+- Current LimboAPI jar missing modern protocol support warning.
+- Duplicate PlayerChatSessionPacket registration issue was avoided by using updated source mappings.
+- SimpleItemComponentManager missing resource crash.
+- SimpleBlock missing blocks.json crash.
+- SimpleBlock legacyblocks NumberFormatException.
+- SimpleTagManager missing tags.json crash.
+- SimpleTagManager/SimpleBlock crash from minecraft:chain remapping to minecraft:iron_chain.
+
+
+19. Notes
+
+- LimboAuth errors in the pasted logs are downstream because LimboAPI failed to load first.
+- After replacing LimboAPI with the latest jar, retest Velocity startup.
+- If LimboAPI loads successfully but LimboAuth still errors, that will be a separate LimboAuth issue.
+
+
+20. File to use
+
+Use this jar:
+plugin/build/libs/limboapi-1.1.27-SNAPSHOT.jar
+
+Replace the old LimboAPI jar in Velocity plugins with this file.
